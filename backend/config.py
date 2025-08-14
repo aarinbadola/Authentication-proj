@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()  
+
 import os
 from pathlib import Path
 
@@ -55,3 +58,4 @@ def is_valid_file_extension(filename: str, file_type: str) -> bool:
     elif file_type == "live_image":
         return ext in ALLOWED_LIVE_EXTENSIONS
     return False
+#aarin sample
