@@ -1,217 +1,300 @@
+# services/liveness_service.py
 """
-Simplified Enhanced Liveness Detection with Auto Frame Capture
-Keeps your original 180-line simplicity + adds automatic best frame capture
+Complete Liveness Detection Service
+Handles face detection, movement tracking, and frame quality assessment
 """
 
 import cv2
 import numpy as np
-import mediapipe as mp
-import random
 import time
+import math
+from typing import Dict, List, Optional, Tuple
 
-class SimpleLivenessDetector:
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    MEDIAPIPE_AVAILABLE = False
+    print("⚠️ MediaPipe not available - using OpenCV fallback")
+
+class LivenessDetector:
+    """
+    Liveness detection using face landmarks and movement analysis
+    Supports both MediaPipe and OpenCV backends
+    """
+    
     def __init__(self):
-        # MediaPipe setup
-        self.face_mesh = mp.solutions.face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        
-        # Simple 2 challenges
-        self.challenges = {
-            'mouth_open': {'name': 'Open your mouth wide', 'timeout': 4},
-            'head_turn': {'name': 'Turn your head', 'timeout': 5}
-        }
-        
-        self.reset_session()
-    
-    def reset_session(self):
-        """Start new session"""
-        self.current_challenge = random.choice(list(self.challenges.keys()))
+        self.use_mediapipe = MEDIAPIPE_AVAILABLE
+        self.frame_count = 0
         self.start_time = time.time()
+        self.face_positions = []
+        self.face_sizes = []
+        self.movement_threshold = 15
         self.completed = False
-        
-        # For head turn
-        self.turn_direction = random.choice(['left', 'right'])
-        
-        # Frame capture (simple)
-        self.captured_frames = []
         self.best_frame = None
-        self.best_quality = 0.0
-    
-    def get_frame_quality(self, frame):
-        """Simple quality check: face size + sharpness"""
-        try:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
-            # Face detection for size
-            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-            
-            # Quality score
-            quality = 0.0
-            
-            # Face size score
-            if len(faces) > 0:
-                (x, y, w, h) = faces[0]
-                face_area = w * h
-                frame_area = frame.shape[0] * frame.shape[1]
-                size_score = min(0.5, face_area / (frame_area * 0.1))
-                quality += size_score
-            
-            # Sharpness score
-            sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
-            sharpness_score = min(0.5, sharpness / 500)
-            quality += sharpness_score
-            
-            return quality
-        except:
-            return 0.0
-    
-    def capture_if_good(self, frame):
-        """Capture frame if it's good quality"""
-        quality = self.get_frame_quality(frame)
+        self.best_frame_score = 0
         
-        # Only capture if decent quality
-        if quality < 0.3:
+        # Initialize detection backends
+        if self.use_mediapipe:
+            self._init_mediapipe()
+        else:
+            self._init_opencv()
+    
+    def _init_mediapipe(self):
+        """Initialize MediaPipe face detection"""
+        try:
+            self.mp_face_detection = mp.solutions.face_detection
+            self.mp_drawing = mp.solutions.drawing_utils
+            self.face_detector = self.mp_face_detection.FaceDetection(
+                model_selection=1, 
+                min_detection_confidence=0.5
+            )
+            print("✅ MediaPipe face detection initialized")
+        except Exception as e:
+            print(f"⚠️ MediaPipe initialization failed: {e}")
+            self.use_mediapipe = False
+            self._init_opencv()
+    
+    def _init_opencv(self):
+        """Initialize OpenCV face detection as fallback"""
+        try:
+            # Try to load Haar cascade
+            self.face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            )
+            print("✅ OpenCV face detection initialized")
+        except Exception as e:
+            print(f"⚠️ OpenCV initialization failed: {e}")
+            # Create a mock detector for testing
+            self.face_cascade = None
+    
+    def detect_faces_mediapipe(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        """Detect faces using MediaPipe"""
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.face_detector.process(rgb_frame)
+        
+        faces = []
+        if results.detections:
+            h, w, _ = frame.shape
+            for detection in results.detections:
+                bbox = detection.location_data.relative_bounding_box
+                x = int(bbox.xmin * w)
+                y = int(bbox.ymin * h)
+                width = int(bbox.width * w)
+                height = int(bbox.height * h)
+                faces.append((x, y, width, height))
+        
+        return faces
+    
+    def detect_faces_opencv(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        """Detect faces using OpenCV"""
+        if self.face_cascade is None:
+            # Mock detection for testing
+            h, w = frame.shape[:2]
+            # Return a centered mock face
+            mock_size = min(w, h) // 3
+            x = (w - mock_size) // 2
+            y = (h - mock_size) // 2
+            return [(x, y, mock_size, mock_size)]
+        
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50)
+        )
+        return [(x, y, w, h) for x, y, w, h in faces]
+    
+    def calculate_frame_quality(self, frame: np.ndarray, face_box: Tuple[int, int, int, int]) -> float:
+        """Calculate frame quality score based on various factors"""
+        x, y, w, h = face_box
+        
+        # Extract face region
+        face_region = frame[y:y+h, x:x+w]
+        if face_region.size == 0:
+            return 0.0
+        
+        # Convert to grayscale for analysis
+        gray_face = cv2.cvtColor(face_region, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate sharpness using Laplacian variance
+        sharpness = cv2.Laplacian(gray_face, cv2.CV_64F).var()
+        
+        # Calculate brightness (avoid too dark or too bright)
+        brightness = np.mean(gray_face)
+        brightness_score = 1.0 - abs(brightness - 128) / 128
+        
+        # Size score (prefer larger faces)
+        frame_area = frame.shape[0] * frame.shape[1]
+        face_area = w * h
+        size_score = min(face_area / (frame_area * 0.05), 1.0)  # Max at 5% of frame
+        
+        # Center score (prefer centered faces)
+        frame_center_x, frame_center_y = frame.shape[1] // 2, frame.shape[0] // 2
+        face_center_x, face_center_y = x + w // 2, y + h // 2
+        distance = math.sqrt((face_center_x - frame_center_x)**2 + (face_center_y - frame_center_y)**2)
+        max_distance = math.sqrt(frame.shape[1]**2 + frame.shape[0]**2) / 2
+        center_score = 1.0 - (distance / max_distance)
+        
+        # Combined score
+        quality_score = (sharpness/1000 * 0.4 + brightness_score * 0.3 + 
+                        size_score * 0.2 + center_score * 0.1)
+        
+        return min(quality_score, 1.0)
+    
+    def check_movement(self, current_face: Tuple[int, int, int, int]) -> bool:
+        """Check if sufficient movement has been detected"""
+        if len(self.face_positions) < 2:
             return False
         
-        # Keep only best 3 frames
-        if len(self.captured_frames) < 3:
-            self.captured_frames.append(frame.copy())
-        elif quality > min([self.get_frame_quality(f) for f in self.captured_frames]):
-            # Replace worst frame
-            worst_idx = 0
-            worst_quality = self.get_frame_quality(self.captured_frames[0])
-            for i, f in enumerate(self.captured_frames[1:], 1):
-                q = self.get_frame_quality(f)
-                if q < worst_quality:
-                    worst_quality = q
-                    worst_idx = i
-            self.captured_frames[worst_idx] = frame.copy()
+        x, y, w, h = current_face
+        center_x, center_y = x + w // 2, y + h // 2
         
-        # Update best frame
-        if quality > self.best_quality:
-            self.best_frame = frame.copy()
-            self.best_quality = quality
+        # Check movement from first position
+        first_x, first_y = self.face_positions[0]
+        movement = math.sqrt((center_x - first_x)**2 + (center_y - first_y)**2)
         
-        return True
+        return movement > self.movement_threshold
     
-    def check_mouth_open(self, landmarks, height, width):
-        """Mouth opening check"""
-        top_lip = landmarks.landmark[13]
-        bottom_lip = landmarks.landmark[14]
-        mouth_height = abs(top_lip.y - bottom_lip.y) * height
-        return mouth_height > 15
-    
-    def check_head_turn(self, landmarks, width):
-        """Head turn check"""
-        nose_tip = landmarks.landmark[1]
-        left_eye = landmarks.landmark[33]
-        right_eye = landmarks.landmark[362]
+    def process_frame(self, frame: np.ndarray) -> Dict:
+        """
+        Process a single frame for liveness detection
+        Returns status and instructions
+        """
+        self.frame_count += 1
+        elapsed_time = time.time() - self.start_time
         
-        eye_center_x = (left_eye.x + right_eye.x) / 2
-        nose_x = nose_tip.x
-        turn_amount = nose_x - eye_center_x
-        
-        if self.turn_direction == 'left':
-            return turn_amount > 0.05
+        # Detect faces
+        if self.use_mediapipe:
+            faces = self.detect_faces_mediapipe(frame)
         else:
-            return turn_amount < -0.05
-    
-    def process_frame(self, frame):
-        """Main frame processing + auto capture"""
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(rgb_frame)
-        height, width = frame.shape[:2]
+            faces = self.detect_faces_opencv(frame)
         
-        # No face
-        if not results.multi_face_landmarks:
+        # No face detected
+        if not faces:
             return {
-                'status': 'no_face',
-                'message': 'Please show your face clearly',
-                'completed': False
+                "status": "no_face",
+                "instruction": "Please position your face in the camera",
+                "frame_count": self.frame_count,
+                "elapsed_time": elapsed_time
             }
         
-        landmarks = results.multi_face_landmarks[0]
-        
-        # Auto capture good frames
-        self.capture_if_good(frame)
-        
-        # Check timeout
-        elapsed = time.time() - self.start_time
-        timeout = self.challenges[self.current_challenge]['timeout']
-        
-        if elapsed > timeout:
+        # Multiple faces detected
+        if len(faces) > 1:
             return {
-                'status': 'timeout',
-                'message': 'Time up! Please try again.',
-                'completed': False
+                "status": "multiple_faces",
+                "instruction": "Multiple faces detected. Please ensure only you are in frame",
+                "frame_count": self.frame_count,
+                "elapsed_time": elapsed_time
             }
         
-        # Check challenge
-        challenge_passed = False
+        # Single face detected - process it
+        face = faces[0]
+        x, y, w, h = face
+        center_x, center_y = x + w // 2, y + h // 2
         
-        if self.current_challenge == 'mouth_open':
-            challenge_passed = self.check_mouth_open(landmarks, height, width)
-        elif self.current_challenge == 'head_turn':
-            challenge_passed = self.check_head_turn(landmarks, width)
+        # Store face position and size
+        self.face_positions.append((center_x, center_y))
+        self.face_sizes.append(w * h)
         
-        if challenge_passed:
-            self.completed = True
-            return {
-                'status': 'success',
-                'message': 'Challenge completed! ✅',
-                'completed': True,
-                'frames_captured': len(self.captured_frames),
-                'best_quality': self.best_quality
-            }
+        # Keep only recent positions (last 30 frames)
+        if len(self.face_positions) > 30:
+            self.face_positions = self.face_positions[-30:]
+            self.face_sizes = self.face_sizes[-30:]
         
-        # In progress
-        time_left = int(timeout - elapsed)
-        instruction = self.challenges[self.current_challenge]['name']
-        if self.current_challenge == 'head_turn':
-            instruction = f"Turn your head {self.turn_direction}"
+        # Calculate frame quality
+        quality_score = self.calculate_frame_quality(frame, face)
+        
+        # Update best frame if this one is better
+        if quality_score > self.best_frame_score:
+            self.best_frame_score = quality_score
+            self.best_frame = frame.copy()
+        
+        # Check if liveness is completed
+        movement_detected = self.check_movement(face)
+        sufficient_frames = self.frame_count >= 10
+        minimum_time = elapsed_time >= 3.0
+        
+        if movement_detected and sufficient_frames and minimum_time:
+            if not self.completed:
+                self.completed = True
+                return {
+                    "status": "completed",
+                    "instruction": "Liveness verification completed!",
+                    "frame_count": self.frame_count,
+                    "elapsed_time": elapsed_time,
+                    "quality_score": quality_score,
+                    "best_frame_score": self.best_frame_score
+                }
+        
+        # Still processing
+        instructions = []
+        if not sufficient_frames:
+            instructions.append("Keep your face steady")
+        if not movement_detected:
+            instructions.append("Slowly turn your head left and right")
+        if not minimum_time:
+            instructions.append("Continue for a few more seconds")
+        
+        instruction = " and ".join(instructions) if instructions else "Processing..."
         
         return {
-            'status': 'in_progress',
-            'message': f'{instruction} ({time_left}s remaining)',
-            'completed': False,
-            'time_remaining': time_left
+            "status": "processing",
+            "instruction": instruction,
+            "frame_count": self.frame_count,
+            "elapsed_time": elapsed_time,
+            "quality_score": quality_score,
+            "movement_detected": movement_detected,
+            "progress": min((self.frame_count / 10) * 100, 100)
         }
     
-    def get_best_frame(self):
-        """Get best captured frame"""
+    def get_best_frame(self) -> Optional[np.ndarray]:
+        """Get the best quality frame captured during liveness detection"""
         return self.best_frame
-
-# Helper functions for API
-def start_liveness_session():
-    """Initialize session"""
-    detector = SimpleLivenessDetector()
-    challenge_info = detector.challenges[detector.current_challenge]
     
-    return {
-        'session_started': True,
-        'challenge': detector.current_challenge,
-        'instruction': challenge_info['name'],
-        'timeout': challenge_info['timeout']
-    }
+    def reset(self):
+        """Reset the detector for a new session"""
+        self.frame_count = 0
+        self.start_time = time.time()
+        self.face_positions = []
+        self.face_sizes = []
+        self.completed = False
+        self.best_frame = None
+        self.best_frame_score = 0
 
-def verify_liveness_frame(frame_data, detector):
-    """Process frame"""
-    if isinstance(frame_data, str):  # base64
-        import base64
-        img_bytes = base64.b64decode(frame_data)
-        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    else:
-        frame = frame_data
-    
+# Utility functions for backward compatibility
+def create_liveness_detector() -> LivenessDetector:
+    """Factory function to create a liveness detector"""
+    return LivenessDetector()
+
+def process_liveness_frame(detector: LivenessDetector, frame: np.ndarray) -> Dict:
+    """Process a frame for liveness detection"""
     return detector.process_frame(frame)
 
-# Legacy function for compatibility
-async def check_liveness(image_file):
-    """Legacy liveness check"""
-    return {"is_live": True, "confidence": 0.8, "method": "legacy"}
+# Test function
+def test_liveness_service():
+    """Test the liveness service functionality"""
+    print("🧪 Testing Liveness Service...")
+    
+    try:
+        detector = LivenessDetector()
+        print(f"✅ LivenessDetector created successfully")
+        print(f"   Backend: {'MediaPipe' if detector.use_mediapipe else 'OpenCV'}")
+        
+        # Create a test frame (simple colored rectangle)
+        test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        test_frame[:] = (100, 150, 200)  # Fill with color
+        
+        result = detector.process_frame(test_frame)
+        print(f"✅ Frame processing successful")
+        print(f"   Status: {result['status']}")
+        print(f"   Instruction: {result['instruction']}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Liveness service test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+if __name__ == "__main__":
+    test_liveness_service()

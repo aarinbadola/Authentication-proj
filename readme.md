@@ -38,6 +38,7 @@ It allows secure user registration, authentication, and real-time video-based ve
 ---
 
 ## 📂 Project Structure
+```
 Biometric_project/
 │
 ├── README.md # Project documentation
@@ -76,7 +77,7 @@ Biometric_project/
 ├── test_liveness.py
 ├── test_face_match.py
 └── test_auth.py
-
+```
 ## Create and activate virtual environment
 python -m venv venv
 source venv/bin/activate   # Mac/Linux
