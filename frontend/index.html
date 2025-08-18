@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Biometric Verification System</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <h1>Biometric Identity Verification</h1>
@@ -27,26 +27,22 @@
     <button id="verifyOtpBtn">Verify OTP</button>
   </section>
 
-  <!-- Webcam Section -->
+  <!-- Liveness -->
   <section>
-    <h2>Face Verification</h2>
-    <video id="video" width="320" height="240" autoplay></video><br>
-    <button id="captureBtn">Capture Face</button>
+    <h2>Liveness Detection</h2>
+    <button id="startLivenessBtn">Start Liveness</button>
+    <p id="livenessStatus"></p>
   </section>
 
-  <!-- OCR Section -->
+  <!-- Aadhaar Upload -->
   <section>
-    <h2>OCR (ATM Card Upload)</h2>
-    <input type="file" id="cardInput" accept="image/*"><br>
-    <button id="uploadBtn">Upload Card</button>
+    <h2>Upload Aadhaar</h2>
+    <input type="file" id="aadhaarFile"><br>
+    <button id="verifyBtn">Verify Identity</button>
   </section>
 
-  <!-- Results -->
-  <section>
-    <h2>Results</h2>
-    <pre id="results"></pre>
-  </section>
+  <p id="result"></p>
 
-  <script src="script.js"></script>
+  <script src="/static/script.js"></script>
 </body>
 </html>
