@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Biometric Verification System</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Biometric Identity Verification</h1>
+
+  <!-- User Registration & OTP -->
+  <section>
+    <h2>User Registration</h2>
+    <input type="text" id="name" placeholder="Full Name"><br>
+    <input type="text" id="phone" placeholder="Phone (10 digits)"><br>
+    <input type="number" id="age" placeholder="Age"><br>
+    <input type="text" id="gender" placeholder="Gender"><br>
+    <input type="email" id="email" placeholder="Email"><br>
+    <button id="registerBtn">Register</button>
+  </section>
+
+  <section>
+    <h2>OTP Verification</h2>
+    <input type="text" id="sessionId" placeholder="Session ID"><br>
+    <input type="text" id="otp" placeholder="Enter OTP"><br>
+    <button id="verifyOtpBtn">Verify OTP</button>
+  </section>
+
+  <!-- Webcam Section -->
+  <section>
+    <h2>Face Verification</h2>
+    <video id="video" width="320" height="240" autoplay></video><br>
+    <button id="captureBtn">Capture Face</button>
+  </section>
+
+  <!-- OCR Section -->
+  <section>
+    <h2>OCR (ATM Card Upload)</h2>
+    <input type="file" id="cardInput" accept="image/*"><br>
+    <button id="uploadBtn">Upload Card</button>
+  </section>
+
+  <!-- Results -->
+  <section>
+    <h2>Results</h2>
+    <pre id="results"></pre>
+  </section>
+
+  <script src="script.js"></script>
+</body>
+</html>
