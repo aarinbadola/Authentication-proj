@@ -1,164 +1,174 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, LargeBinary, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
-from datetime import datetime
-import os
-from dotenv import load_dotenv
+"""
+Simplified Database for Biometric Verification System
+Minimal code with essential functionality only
+"""
 
-# Load environment variables
-load_dotenv()
+import sqlite3
+import time
+from typing import Dict, Optional
 
-# Silence SQLAlchemy 2.0 warning
-import os
-os.environ['SQLALCHEMY_SILENCE_UBER_WARNING'] = '1'
+DATABASE_NAME = "biometric_verification.db"
 
-# Database URL from environment
-DATABASE_URL = os.getenv("DB_URL", "sqlite:///./biometric.db")
-
-# Create engine
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-
-# Session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Base class for models
-Base = declarative_base()
-
-
-class User(Base):
-    """User information and personal details"""
-    __tablename__ = "users"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    full_name = Column(String, nullable=False)
-    phone = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    is_verified = Column(Boolean, default=False)
-    
-    # Relationships
-    verification_sessions = relationship("VerificationSession", back_populates="user")
-
-
-class VerificationSession(Base):
-    """Individual verification attempts"""
-    __tablename__ = "verification_sessions"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    session_token = Column(String, unique=True, nullable=False)  # For tracking
-    status = Column(String, default="pending")  # pending, in_progress, completed, failed
-    created_at = Column(DateTime, default=datetime.utcnow)
-    completed_at = Column(DateTime, nullable=True)
-    
-    # Verification steps completion
-    ocr_completed = Column(Boolean, default=False)
-    liveness_completed = Column(Boolean, default=False)
-    face_match_completed = Column(Boolean, default=False)
-    
-    # Overall verification result
-    verification_passed = Column(Boolean, default=False)
-    failure_reason = Column(String, nullable=True)
-    
-    # Relationships
-    user = relationship("User", back_populates="verification_sessions")
-    documents = relationship("Document", back_populates="session")
-    live_images = relationship("LiveImage", back_populates="session")
-    verification_results = relationship("VerificationResult", back_populates="session")
-
-
-class Document(Base):
-    """Uploaded government ID documents"""
-    __tablename__ = "documents"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("verification_sessions.id"), nullable=False)
-    file_path = Column(String, nullable=False)  # Path to uploaded file
-    file_name = Column(String, nullable=False)
-    file_type = Column(String, nullable=False)  # jpg, png, pdf, etc.
-    file_size = Column(Integer, nullable=False)  # in bytes
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
-    
-    # OCR extracted data (encrypted)
-    extracted_data_encrypted = Column(LargeBinary, nullable=True)  # JSON data, encrypted
-    ocr_confidence = Column(Integer, nullable=True)  # 0-100 confidence score
-    
-    # Document validation
-    is_valid_document = Column(Boolean, default=False)
-    document_type = Column(String, nullable=True)  # passport, driver_license, id_card, etc.
-    
-    # Relationships
-    session = relationship("VerificationSession", back_populates="documents")
-
-
-class LiveImage(Base):
-    """Live captured images for liveness detection and face matching"""
-    __tablename__ = "live_images"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("verification_sessions.id"), nullable=False)
-    file_path = Column(String, nullable=False)
-    captured_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Liveness detection results
-    is_live = Column(Boolean, default=False)
-    liveness_confidence = Column(Integer, nullable=True)  # 0-100 confidence score
-    liveness_details = Column(Text, nullable=True)  # JSON details about detection
-    
-    # Face detection
-    faces_detected = Column(Integer, default=0)
-    face_coordinates = Column(Text, nullable=True)  # JSON with face bounding boxes
-    
-    # Relationships
-    session = relationship("VerificationSession", back_populates="live_images")
-
-
-class VerificationResult(Base):
-    """Final verification results and matching scores"""
-    __tablename__ = "verification_results"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("verification_sessions.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Face matching results
-    face_match_score = Column(Integer, nullable=True)  # 0-100 similarity score
-    face_match_threshold = Column(Integer, default=75)  # Minimum score to pass
-    face_match_passed = Column(Boolean, default=False)
-    
-    # Overall verification score
-    overall_score = Column(Integer, nullable=True)  # Combined score from all checks
-    risk_level = Column(String, default="medium")  # low, medium, high
-    
-    # Additional verification details
-    verification_details = Column(Text, nullable=True)  # JSON with detailed results
-    processing_time = Column(Integer, nullable=True)  # Processing time in milliseconds
-    
-    # Relationships
-    session = relationship("VerificationSession", back_populates="verification_results")
-
-
-def create_tables():
-    """Create all database tables"""
-    Base.metadata.create_all(bind=engine)
-
-
-def get_db():
-    """Dependency to get database session"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
+# In-memory user sessions (temporary storage for security)
+user_sessions: Dict[str, dict] = {}
 
 def init_database():
-    """Initialize database with tables"""
-    print("Creating database tables...")
-    create_tables()
-    print("Database initialized successfully!")
+    """Initialize database with required tables"""
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    # Verification results table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS verification_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            verification_id TEXT,
+            result TEXT,
+            user_name TEXT,
+            phone_last4 TEXT,
+            timestamp REAL,
+            face_match_confidence REAL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Simple stats table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stats (
+            total_verifications INTEGER DEFAULT 0,
+            successful_verifications INTEGER DEFAULT 0,
+            total_sessions INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Initialize stats if empty
+    cursor.execute("SELECT COUNT(*) FROM stats")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO stats VALUES (0, 0, 0)")
+    
+    conn.commit()
+    conn.close()
+    return True
 
+def store_user_session(session_id: str, session_data: dict):
+    """Store user session temporarily in memory"""
+    user_sessions[session_id] = session_data
+    update_stats("total_sessions", 1)
+    return True
 
-# Run this when importing to ensure tables exist
+def get_user_session(session_id: str) -> Optional[dict]:
+    """Get user session if not expired"""
+    session_data = user_sessions.get(session_id)
+    if not session_data:
+        return None
+    
+    # Check expiry
+    current_time = time.time()
+    if current_time > session_data.get("expires_at", 0):
+        user_sessions.pop(session_id, None)
+        return None
+    
+    return session_data
+
+def delete_user_session(session_id: str):
+    """Delete user session (cleanup)"""
+    user_sessions.pop(session_id, None)
+    return True
+
+def store_verification_result(verification_data: dict):
+    """Store final verification result"""
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO verification_results 
+        (verification_id, result, user_name, phone_last4, timestamp, face_match_confidence) 
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        verification_data.get("verification_id"),
+        verification_data.get("result"),
+        verification_data.get("user_name"),
+        verification_data.get("phone_last4"),
+        verification_data.get("timestamp"),
+        verification_data.get("face_match_confidence")
+    ))
+    
+    conn.commit()
+    conn.close()
+    
+    # Update stats
+    update_stats("total_verifications", 1)
+    if verification_data.get("result") == "VERIFIED":
+        update_stats("successful_verifications", 1)
+    
+    return True
+
+def update_stats(stat_name: str, increment: int = 1):
+    """Update statistics"""
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute(f"UPDATE stats SET {stat_name} = {stat_name} + ?", (increment,))
+    
+    conn.commit()
+    conn.close()
+    return True
+
+def get_stats() -> dict:
+    """Get system statistics"""
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM stats")
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return {"total_verifications": 0, "successful_verifications": 0, "success_rate": 0}
+    
+    total, successful, sessions = row
+    success_rate = round((successful / total * 100) if total > 0 else 0, 1)
+    
+    return {
+        "total_verifications": total,
+        "successful_verifications": successful,
+        "total_sessions": sessions,
+        "success_rate": f"{success_rate}%",
+        "active_sessions": len(user_sessions)
+    }
+
+def cleanup_expired_sessions():
+    """Clean up expired sessions"""
+    current_time = time.time()
+    expired = [sid for sid, data in user_sessions.items() 
+               if current_time > data.get("expires_at", 0)]
+    
+    for session_id in expired:
+        user_sessions.pop(session_id)
+    
+    return len(expired)
+
+# Simple test function
+def test_database():
+    """Test basic functionality"""
+    print("🎯 Testing Database...")
+    
+    if init_database():
+        print("✅ Database initialized")
+    
+    # Test session
+    test_session = {
+        "name": "Test User",
+        "phone": "1234567890",
+        "created_at": time.time(),
+        "expires_at": time.time() + 1800
+    }
+    
+    store_user_session("test_123", test_session)
+    if get_user_session("test_123"):
+        print("✅ Session storage works")
+    
+    delete_user_session("test_123")
+    print("✅ Database ready!")
+
 if __name__ == "__main__":
-    init_database()
+    test_database()
